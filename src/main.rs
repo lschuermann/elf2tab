@@ -282,7 +282,7 @@ fn elf_to_tbf<W: Write>(
     // Need an array of sections to look for relocation data to include.
     let mut rel_sections: Vec<String> = Vec::new();
 
-    // if this is an x86 linux binary, add the text section
+    // If this is an x86 binary, add the text section relocations as well.
     if input.ehdr.machine == elf::types::EM_X86_64 || input.ehdr.machine == elf::types::EM_386 {
         rel_sections.push(".text".to_string());
     }
@@ -485,42 +485,49 @@ fn elf_to_tbf<W: Write>(
     // Next we have to add in any relocation data.
     let mut relocation_binary: Vec<u8> = Vec::new();
 
-    // For each section that might have relocation data, check if a .rel.X
-    // section exists and if so include it.
+    // For each section that might have relocation data, check if a .rel.X or
+    // .rela.X section exists and if so include it. Since some Tock platforms
+    // use REL relocations and others use RELA locations, we just make elf2tab
+    // support both.
     if verbose {
-        if input.ehdr.machine == elf::types::EM_X86_64 || input.ehdr.machine == elf::types::EM_386 {
-            println!("Searching for .rela.X sections to add.");
-        }
-        else
-        {
-            println!("Searching for .rel.X sections to add.");
+        println!("Searching for .rel.X or .rela.X sections to add.");
+        println!("  Considering relocations for the following sections:");
+        for relocation_section_name in &rel_sections {
+            println!("    - {}", relocation_section_name);
         }
     }
     for relocation_section_name in &rel_sections {
-        let mut name: String = if input.ehdr.machine == elf::types::EM_X86_64 || input.ehdr.machine == elf::types::EM_386 { ".rela" } else { ".rel" }.to_owned();
-        name.push_str(relocation_section_name);
+        let mut name_rel: String = ".rel".to_owned();
+        let mut name_rela: String = ".rela".to_owned();
+        name_rel.push_str(relocation_section_name);
+        name_rela.push_str(relocation_section_name);
 
-        let rel_data = input
+        let (rel_data, section_name) = input
             .sections
             .iter()
-            .find(|section| section.shdr.name == name)
-            .map_or(&[] as &[u8], |section| section.data.as_ref());
+            .find(|section| section.shdr.name == name_rel || section.shdr.name == name_rela)
+            .map_or((&[] as &[u8], ""), |section| {
+                (section.data.as_ref(), section.shdr.name.as_ref())
+            });
 
-        relocation_binary.extend(rel_data);
+        // If there is content in this section, add it to the relocation binary.
+        if !rel_data.is_empty() {
+            relocation_binary.extend(rel_data);
 
-        if verbose && !rel_data.is_empty() {
-            println!(
-                "  Adding {0} section. Offset: {1} ({1:#x}). Length: {2} ({2:#x}) bytes.",
-                name,
-                binary_index + mem::size_of::<u32>() + rel_data.len(),
-                rel_data.len(),
-            );
-        }
-        if !rel_data.is_empty() && amount_alignment_needed(binary_index as u32, 4) != 0 {
-            println!(
-                "Warning! Placing section {} at {:#x}, which is not 4-byte aligned.",
-                name, binary_index
-            );
+            if verbose {
+                println!(
+                    "  Adding {0} section. Offset: {1} ({1:#x}). Length: {2} ({2:#x}) bytes.",
+                    section_name,
+                    binary_index + mem::size_of::<u32>() + rel_data.len(),
+                    rel_data.len(),
+                );
+            }
+            if amount_alignment_needed(binary_index as u32, 4) != 0 {
+                println!(
+                    "Warning! Placing section {} at {:#x}, which is not 4-byte aligned.",
+                    section_name, binary_index
+                );
+            }
         }
     }
 
